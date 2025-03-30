@@ -1,4 +1,4 @@
-import bittorrent.torrent_parser as Parser
+import ZapCore.torrent_parser as Parser
 
 def main():
     torrent_attrib = Parser.parseTorrent("../tests/Balatro.torrent")
