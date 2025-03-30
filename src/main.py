@@ -1,10 +1,9 @@
-from bittorrent.torrent_parser import parseTorrent
+import bittorrent.torrent_parser as Parser
 
 def main():
-    torrent_attrib = parseTorrent("../tests/Balatro.torrent")
-    for ele in torrent_attrib:
-        print(torrent_attrib[ele])
-        print("\n")
+    torrent_attrib = Parser.parseTorrent("../tests/Balatro.torrent")
+    Parser.displayAttributes(torrent_attrib)
+
 
 if __name__ == "__main__":
     main()
