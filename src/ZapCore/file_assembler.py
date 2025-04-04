@@ -7,6 +7,10 @@ output_dir = None;
 assembly_queue = asyncio.Queue()
 
 def set_output_dir(path: str = None):
+    """
+    This function takes the output directory (if specified) in the run command by the user otherwise sets the value to the
+    default directory
+    """
     global output_dir
     if path:
         output_dir = Path(path)
@@ -39,6 +43,15 @@ def assemble_multiple():
     pass # TODO
 
 async def assemble(piece_index: int, piece_data, metadata: dict):
+    """
+    Checks if the file being given for assembly is a multi-file torrent or a single-file torrent and then adds the specific
+    assembly function to the assembly queue for it to be processes
+
+    Args:
+        piece_index (int): Index of the piece that has to be written
+        piece_data (binary): Actual piece data in binary coded format
+        metadata (dict): The parsed torrent metadata in the form of a dictionary
+    """
     if b'files' in metadata.get("info"):
         pass # yet to implement
     else:
@@ -46,6 +59,10 @@ async def assemble(piece_index: int, piece_data, metadata: dict):
         await assembly_queue.put((assemble_single, (piece_index, piece_data, metadata.get("piece length"), file_path)))
 
 async def start_assembler():
+    """
+    Creates a infinite loop that pops one assembly process from the queue and dispatches it into a new thread to process
+    the assembly
+    """
     while True:
         func, args = await assembly_queue.get()
         try:
