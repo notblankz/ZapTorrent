@@ -12,12 +12,12 @@ def parse_torrent(file):
         with open(file, "rb") as torrent:
             content = torrent.read()
             decoded_data = bencodepy.bdecode(content)
-        print("[INFO] Torrent file successfully parsed")
+        print("[PARSER : INFO] Torrent file successfully parsed")
 
         final_metadata = convert_to_dict(decoded_data)
 
     except Exception as e:
-        print("[ERROR] Something went wrong during the parsing of Torrent file")
+        print("[PARSER : ERROR] Something went wrong during the parsing of Torrent file")
         print(e)
 
     return final_metadata
@@ -42,7 +42,7 @@ def convert_to_dict(decoded_data:dict):
         "info hash": hashlib.sha1(bencodepy.bencode(info)).digest(),
         "pieces" : info.get(b'pieces', "No SHA-1 Checksum for pieces found"),
     }
-    print("[INFO] Converted parsed binary to Dictionary")
+    print("[PARSER : INFO] Converted parsed binary to Dictionary")
 
     return metadata
 
@@ -53,7 +53,7 @@ def log_metadata(metadata):
     Args:
         metadata (dict): The dictionary containing parsed torrent metadata.
     """
-    print("[LOG] Displaying Torrent Metadata")
+    print("[PARSER : LOG] Displaying Torrent Metadata")
 
     for key, value in metadata.items():
         if key == "announce-list":
@@ -68,4 +68,4 @@ def log_metadata(metadata):
         else:
             print(f"{key}: {value}")
 
-    print("[LOG] Metadata Display Complete\n")
+    print("[PARSER : LOG] Metadata Display Complete\n")

@@ -1,8 +1,17 @@
-import os
+import asyncio
 from pathlib import Path
+import os
 
-def get_default_path():
-    return (os.path.abspath(Path(__file__).resolve().parents[1] / "Downloads"))
+# Global Variables
+output_dir = None;
+assembly_queue = asyncio.Queue()
+
+def set_output_dir(path: str = None):
+    global output_dir
+    if path:
+        output_dir = Path(path)
+    else:
+        output_dir = Path((os.path.abspath(Path(__file__).resolve().parents[1] / "Downloads")))
 
 def assemble_single(piece_index:int, piece_data, piece_length:int, file_path:str):
     """
@@ -20,32 +29,26 @@ def assemble_single(piece_index:int, piece_data, piece_length:int, file_path:str
         with open(file_path, "a+b") as f:
             f.seek(piece_index * piece_length)
             f.write(piece_data)
-            print(f"[INFO] Successfully written Piece Index: {piece_index}")
+            print(f"[ASSEMBLER : INFO] Successfully written Piece Index: {piece_index}")
     except Exception as e:
-        print(f"[ERROR] Some error occured when trying to write Piece Index: {piece_index}")
+        print(f"[ASSEMBLER : ERROR] Some error occured when trying to write Piece Index: {piece_index}")
+        print(f"[ASSEMBLER : ERROR] Retrying to write Piece Index: {piece_index}")
         print(e)
 
-def assemble_multiple(piece_index:int, piece_data, piece_length:int, metadata:dict, file_path:str):
-    pass
+def assemble_multiple():
+    pass # TODO
 
-def assemble(piece_index:int, piece_data, metadata:dict, output_directory: str = None):
-    """
-    Determines whether the torrent is a single-file or multi-file torrent and calls the appropriate function.
-
-    Args:
-        piece_index (int): The index of the piece being written.
-        piece_data (bytes): The binary data of the received piece.
-        metadata (dict): The parsed metadata of the torrent file.
-        output_directory (str): The directory where the files will be saved.
-    """
-    if output_directory is None:
-        output_directory = get_default_path()
-
-    output_directory = Path(output_directory)
-
+async def assemble(piece_index: int, piece_data, metadata: dict):
     if b'files' in metadata.get("info"):
-        file_path = output_directory / (metadata.get("info")[b'name']).decode()
-        assemble_multiple(piece_index, piece_data, metadata.get('piece length'), metadata, file_path)
+        pass # yet to implement
     else:
-        file_path = output_directory / metadata.get("info")[b'name'].decode()
-        assemble_single(piece_index, piece_data, metadata.get('piece length'), file_path)
+        file_path = Path(output_dir / ((metadata.get("info"))[b'name']).decode())
+        await assembly_queue.put((assemble_single, (piece_index, piece_data, metadata.get("piece length"), file_path)))
+
+async def start_assembler():
+    while True:
+        func, args = await assembly_queue.get()
+        try:
+            await asyncio.to_thread(func, *args)
+        finally:
+            assembly_queue.task_done()
