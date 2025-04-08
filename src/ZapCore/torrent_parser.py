@@ -1,5 +1,6 @@
 import bencodepy
 import hashlib
+from pathlib import Path
 
 def parse_torrent(file):
     """
@@ -45,6 +46,46 @@ def convert_to_dict(decoded_data:dict):
     print("[PARSER : INFO] Converted parsed binary to Dictionary")
 
     return metadata
+
+def construct_path(raw_path):
+    """
+    A small helper function in order to create a Path object to put into the lookup table
+
+    Args:
+        raw_path (str): Path of the file
+    """
+    decoded_list = [path.decode() for path in raw_path]
+    return Path(*decoded_list)
+
+def construct_lookup_table(metadata: dict):
+    """
+    This function processes the 'files' list in the torrent metadata to compute
+    the absolute byte ranges (start and end) for each file in the torrent. It is used
+    to determine which part of a piece corresponds to which file during assembly
+
+    Args:
+        metadata (dict): The parsed dictionary of the .torrent file
+    """
+    try:
+        if (metadata.get("info"))[b'files']:
+            print("[PARSER : INFO] Creating lookup table for all files")
+            global_offset = 0
+            file_lookup_table = []
+            for file in ((metadata.get("info"))[b'files']):
+                start_byte = global_offset
+                end_byte = global_offset + file[b'length']
+                file_lookup_table.append({"start": start_byte, "end": end_byte, "length": file[b'length'], "path": construct_path(file[b'path'])})
+                global_offset += file[b'length']
+            print("[PARSER : INFO] Finished creating lookup table")
+            print("[PARSER : LOG] Displaying the created lookup table")
+            for i in file_lookup_table:
+                print(i)
+            print("[PARSER : LOG] Lookup table display complete")
+            return file_lookup_table
+    except KeyError:
+        print("[PARSER : INFO] No need to create lookup table - Single File Torrent")
+        return None
+
 
 def log_metadata(metadata):
     """
