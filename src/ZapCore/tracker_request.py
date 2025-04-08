@@ -4,6 +4,7 @@ import urllib
 import bencodepy
 import socket
 import struct
+import time
 
 def generate_id():
     """
@@ -57,7 +58,7 @@ def log_tracker_response(response_dict):
 
     print("[TRACKER : LOG] Tracker Response Display Complete\n")
 
-def get_peers(metadata:dict, peer_id):
+def get_peers(metadata:dict, peer_id, max_retries: int, retry_delay: int):
     """
     Sends a GET request to the tracker to retrieve a list of peers participating in the torrent.
 
@@ -99,18 +100,25 @@ def get_peers(metadata:dict, peer_id):
 
     request_url = f"{metadata.get("announce").decode()}?{encoded_params}"
 
-    print(f"[TRACKER : INFO] Sending GET Request for Peer list")
+    for attempt in range(1, max_retries + 1):
+        print(f"[TRACKER : INFO] Sending GET Request for Peer list -> Attempt {attempt}")
 
-    try:
-        response = requests.get(request_url, timeout=10)
-        response.raise_for_status() # Raises an HTTPError if anything did go wrong in the HTTP side of things
-        decoded_resp = bencodepy.bdecode(response.content)
-        print("[TRACKER : INFO] Tracker Request successful, received all peers available")
-        return {
-            "interval" : decoded_resp.get(b'interval'),
-            "min interval" : decoded_resp.get(b'min interval'),
-            "peers" : decode_peer_field(decoded_resp.get(b'peers'))
-        }
-    except Exception as e:
-        print("[TRACKER : ERROR] Tracker request failed")
-        print(e)
+        try:
+            response = requests.get(request_url, timeout=20)
+            response.raise_for_status() # Raises an HTTPError if anything did go wrong in the HTTP side of things
+            decoded_resp = bencodepy.bdecode(response.content)
+            print("[TRACKER : INFO] Tracker Request successful, received all peers available")
+            return {
+                "interval" : decoded_resp.get(b'interval'),
+                "min interval" : decoded_resp.get(b'min interval'),
+                "peers" : decode_peer_field(decoded_resp.get(b'peers'))
+            }
+        except Exception as e:
+            print("[TRACKER : ERROR] Tracker request failed")
+            print(e)
+            if attempt < max_retries:
+                print(f"[TRACKER : INFO] Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+            else:
+                print(f"[TRACKER : ERROR] Failed to get peers from tracker - Tried {attempt} times")
+                exit()
