@@ -8,7 +8,7 @@ output_dir = None;
 assembly_queue = asyncio.Queue()
 metadata = {}
 file_lookup_table = []
-find_ends_lest = []
+file_ends_list = []
 
 def set_global_variables(torrent_metadata, lookup_table):
     """
@@ -20,7 +20,7 @@ def set_global_variables(torrent_metadata, lookup_table):
     """
     global metadata, file_lookup_table, file_ends_list
     metadata = torrent_metadata
-    if file_lookup_table:
+    if lookup_table:
         file_lookup_table = lookup_table
         file_ends_list = [file["end"] for file in file_lookup_table]
 
