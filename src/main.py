@@ -1,9 +1,13 @@
 import ZapCore.torrent_parser as Parser
 import ZapCore.tracker_request as Request
 import ZapCore.file_assembler as Assembler
+import ZapCore.peer_connection as PeerConnector
 import argparse
 from pathlib import Path
 import asyncio
+
+# temp
+import traceback
 
 async def main():
 
@@ -27,14 +31,51 @@ async def main():
         torrent_metadata = Parser.parse_torrent(args.download)
         if args.verbose: Parser.log_metadata(torrent_metadata)
         file_lookup = Parser.construct_lookup_table(torrent_metadata)
+        if args.verbose: Parser.log_lookup_table(file_lookup)
         Assembler.set_global_variables(torrent_metadata, file_lookup)
         peer_id = Request.generate_id()
-        tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 5)
+        tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 3)
         if args.verbose: Request.log_tracker_response(tracker_response)
+
+        for piece_index in range(0,5):
+            print(f"[DOWNLOADER : INFO] Download piece {piece_index}/{torrent_metadata.get("piece count") - 1}")
+
+            try:
+                for peer in tracker_response.get("peers"):
+                    ip, port = peer.split(":")
+                    if ip and port:
+                        # recv_piece_data = PeerConnector.start_peer_download(ip, int(port), torrent_metadata.get("info hash"), peer_id, piece_index, Parser.get_piece_hash(torrent_metadata, piece_index))
+                        recv_piece_data = await asyncio.to_thread(
+                            PeerConnector.start_peer_download,
+                            ip,
+                            int(port),
+                            torrent_metadata.get("info hash"),
+                            peer_id,
+                            piece_index,
+                            Parser.get_piece_hash(torrent_metadata, piece_index)
+                        )
+                        if recv_piece_data != None:
+                            # bump the peer to the top of the list for subsequent requests
+                            (tracker_response.get("peers")).remove(peer)
+                            (tracker_response.get("peers")).insert(0, peer)
+                            print(f"[DOWNLOADER : INFO] Successfully downloaded piece {piece_index}/{torrent_metadata.get("piece count") - 1}")
+                            await Assembler.assemble(piece_index, recv_piece_data)
+                            break
+            except Exception as e:
+                print("Error in main.py")
+                print(traceback.format_exc())
+
+        await Assembler.assembly_queue.join()
+
+
+
     elif args.parse:
         torrent_metadata = Parser.parse_torrent(args.parse)
         Parser.log_metadata(torrent_metadata)
         file_lookup = Parser.construct_lookup_table(torrent_metadata)
+        peer_id = Request.generate_id()
+        tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 3)
+        print(tracker_response.get("peers"))
 
 if __name__ == "__main__":
     asyncio.run(main())
