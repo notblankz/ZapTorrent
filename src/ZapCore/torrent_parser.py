@@ -77,15 +77,16 @@ def construct_lookup_table(metadata: dict):
                 file_lookup_table.append({"start": start_byte, "end": end_byte, "length": file[b'length'], "path": construct_path(file[b'path'])})
                 global_offset += file[b'length']
             print("[PARSER : INFO] Finished creating lookup table")
-            print("[PARSER : LOG] Displaying the created lookup table")
-            for i in file_lookup_table:
-                print(i)
-            print("[PARSER : LOG] Lookup table display complete")
             return file_lookup_table
     except KeyError:
         print("[PARSER : INFO] No need to create lookup table - Single File Torrent")
         return None
 
+def log_lookup_table(lookup_table: list):
+    print("[PARSER : LOG] Displaying the created lookup table")
+    for i in lookup_table:
+        print(i)
+    print("[PARSER : LOG] Lookup table display complete")
 
 def log_metadata(metadata):
     """
@@ -110,3 +111,7 @@ def log_metadata(metadata):
             print(f"{key}: {value}")
 
     print("[PARSER : LOG] Metadata Display Complete\n")
+
+def get_piece_hash(torrent_metadata, index: int):
+    pieces_blob = (torrent_metadata.get('info'))[b'pieces']
+    return pieces_blob[index * 20 : (index + 1) * 20]
