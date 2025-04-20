@@ -1,191 +1,267 @@
-import socket
+import asyncio
 import hashlib
-from file_assembler import assemble
+import struct
+import logging
+from typing import Optional
 
-def connect_to_peer(peer_ip: str, peer_port: int) -> socket.socket:
-    """
-    Establishes a TCP connection to the specified IP and port.
+logger = logging.getLogger(__name__)
 
-    Args:
-        peer_ip (str): The IP address of the peer.
-        peer_port (int): The port number of the peer.
+# Constants
+HANDSHAKE_LENGTH = 68
+BLOCK_SIZE = 16 * 1024  #standard block size
+DEFAULT_TIMEOUT = 10
 
-    Returns:
-        socket.socket: The connected socket object.
-    """
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((peer_ip, peer_port))
-    return s
+
+async def download_piece(
+    peer_ip: str,
+    peer_port: int,
+    info_hash: bytes,
+    peer_id: bytes,
+    piece_index: int,
+    piece_length: int,
+    expected_hash: bytes
+) -> Optional[bytes]:
     
-  
-def perform_handshake(socket: socket.socket, info_hash: bytes, peer_id: bytes) -> bool:
     """
-    Performs the BitTorrent handshake with the peer.
-
-    Args:
-        socket (socket.socket): The connected socket object.
-        info_hash (bytes): The SHA1 hash of the torrent's info dictionary.
-        peer_id (bytes): The unique ID of the client.
-
-    Returns:
-        bool: True if the handshake was successful, False otherwise.
+    Complete piece download workflow with proper protocol compliance.
+    Handles connection, handshake, messaging, and block downloads.
     """
-    handshake = b'\x13BitTorrent protocol' + b'\x00' * 8 + info_hash + peer_id
-    socket.send(handshake)
-    response = socket.recv(68)
-    return response[28:48] == info_hash
     
-  
-  
-  
-def send_interested(socket: socket.socket, info_hash: bytes, peer_id: bytes) -> bool:
-    """
-    Sends an "interested" message to the peer.
+    reader, writer = None, None
+    try:
+        # 1. Establish connection
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(peer_ip, peer_port),
+            timeout=5
+        )
+        logger.debug(f"Connected to {peer_ip}:{peer_port}")
 
-    Args:
-        socket (socket.socket): The connected socket object.
-        info_hash (bytes): The SHA1 hash of the torrent's info dictionary.
-        peer_id (bytes): The unique ID of the client.
+        # 2. Perform handshake
+        if not await perform_handshake(reader, writer, info_hash, peer_id):
+            logger.debug("Handshake failed")
+            return None
 
-    Returns:
-        bool: True if the message was sent successfully, False otherwise.
-    """
-    interested_message = b'\x00\x00\x00\x03\x02'  # Message length + interested ID
-    socket.send(interested_message)
-    response = socket.recv(4)
-    return response == b'\x00\x00\x00\x01'
+        # 3. Message exchange (interested + wait for unchoke)
+        if not await exchange_messages(reader, writer):
+            logger.debug("Message exchange failed")
+            return None
+
+        # 4. Download piece(in blocks as per protocol)
+        piece_data = await download_piece_blocks(
+            reader,
+            writer,
+            piece_index,
+            piece_length
+        )
+        if not piece_data:
+            return None
+
+        # 5. Verify hash
+        if not verify_piece(piece_data, expected_hash):
+            logger.debug("Piece verification failed")
+            return None
+
+        return piece_data
+
+    except (asyncio.TimeoutError, ConnectionError, ValueError) as e:
+        logger.debug(f"Download failed: {type(e).__name__}: {str(e)}")
+        return None
     
-  
-def receive_bitfield(socket: socket.socket) -> list:
-    """
-    Receives the bitfield from the peer.
+    finally:
+        if writer:
+            writer.close()
+            await writer.wait_closed()
 
-    Args:
-        socket (socket.socket): The connected socket object.
 
-    Returns:
-        list: A list representing the pieces the peer has.
-    """
-    response = socket.recv(1024)
-    bitfield_length = response[1]
-    return list(response[2:2 + bitfield_length])
+async def perform_handshake(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    info_hash: bytes,
+    peer_id: bytes
+) -> bool:
     
-  
-def request_piece(socket: socket.socket, piece_index: int, block_offset: int, block_length: int) -> bool:
-    """
-    Sends a request for a specific piece of data from the peer.
-
-    Args:
-        socket (socket.socket): The connected socket object.
-        piece_index (int): The index of the piece being requested.
-        block_offset (int): The offset within the piece.
-        block_length (int): The length of the block being requested.
-
-    Returns:
-        bool: True if the request was sent successfully, False otherwise.
-    """
-    request_message = b'\x00\x00\x00\x0D\x06' + piece_index.to_bytes(4, 'big') + block_offset.to_bytes(4, 'big') + block_length.to_bytes(4, 'big')
-    socket.send(request_message)
-    response = socket.recv(4)
-    return response == b'\x00\x00\x00\x01'
+    """Execute BitTorrent handshake protocol"""
     
-  
-def receive_piece(socket: socket.socket, piece_index: int, block_offset: int, block_length: int) -> bytes:
-    """
-    Receives a piece of data from the peer.
+    handshake = (
+        b'\x13' +                  ##1 byte(protocol length)
+        b'BitTorrent protocol' +   #19 bytes(pstr)
+        b'\x00' * 8 +              #8 bytes(reserved)
+        info_hash +                #20 bytes
+        peer_id                    #20 bytes
+    ) # total-68 bytes
 
-    Args:
-        socket (socket.socket): The connected socket object.
-        piece_index (int): The index of the piece being received.
-        block_offset (int): The offset within the piece.
-        block_length (int): The length of the block being received.
+    writer.write(handshake)
+    await writer.drain()
 
-    Returns:
-        bytes: The received piece of data.
-    """
-    response = socket.recv(block_length + 13)
-    return response[13:]
+    try:
+        response = await asyncio.wait_for(
+            reader.readexactly(HANDSHAKE_LENGTH),
+            timeout=DEFAULT_TIMEOUT
+        )
+        return response[28:48] == info_hash #validate info_hash in response
     
-  
-def download_piece(socket: socket.socket, piece_index: int, block_offset: int, block_length: int) -> bytes:
-    """
-    Downloads a piece of data from the peer.
-
-    Args:
-        socket (socket.socket): The connected socket object.
-        piece_index (int): The index of the piece being downloaded.
-        block_offset (int): The offset within the piece.
-        block_length (int): The length of the block being downloaded.
-
-    Returns:
-        bytes: The downloaded piece of data.
-    """
-    request_piece(socket, piece_index, block_offset, block_length)
-    return receive_piece(socket, piece_index, block_offset, block_length)
-    
-
-def verify_piece(piece_data: bytes, piece_index: int, info_hash: bytes) -> bool:
-    """
-    Verifies the integrity of the received piece using SHA1 hash.
-
-    Args:
-        piece_data (bytes): The received piece of data.
-        piece_index (int): The index of the piece being verified.
-        info_hash (bytes): The SHA1 hash of the torrent's info dictionary.
-
-    Returns:
-        bool: True if the piece is valid, False otherwise.
-    """
-    sha1 = hashlib.sha1()
-    sha1.update(piece_data)
-    return sha1.digest() == info_hash
-    
-  
-def manage_peer_connection(peer_ip: str, peer_port: int, info_hash: bytes, peer_id: bytes, piece_index: int, block_offset: int, block_length: int):
-    """
-    Manages the connection to a peer and downloads a piece of data.
-
-    Args:
-        peer_ip (str): The IP address of the peer.
-        peer_port (int): The port number of the peer.
-        info_hash (bytes): The SHA1 hash of the torrent's info dictionary.
-        peer_id (bytes): The unique ID of the client.
-        piece_index (int): The index of the piece being downloaded.
-        block_offset (int): The offset within the piece.
-        block_length (int): The length of the block being downloaded.
-
-    Returns:
-        bool: True if the download was successful, False otherwise.
-    """
-    socket = connect_to_peer(peer_ip, peer_port)
-    if not perform_handshake(socket, info_hash, peer_id):
+    except Exception as e:
+        logger.debug(f"Handshake error: {str(e)}")
         return False
-    send_interested(socket, info_hash, peer_id)
-    bitfield = receive_bitfield(socket)
-    if bitfield[piece_index]:
-        piece_data = download_piece(socket, piece_index, block_offset, block_length)
-        if verify_piece(piece_data, piece_index, info_hash):
-            assemble(piece_index, piece_data)
-            return True
-    return False
-    
-  
-def start_peer_download(peer_ip: str, peer_port: int, info_hash: bytes, peer_id: bytes, piece_index: int, block_offset: int, block_length: int):
-    """
-    Initiates the download process from a peer.
 
-    Args:
-        peer_ip (str): The IP address of the peer.
-        peer_port (int): The port number of the peer.
-        info_hash (bytes): The SHA1 hash of the torrent's info dictionary.
-        peer_id (bytes): The unique ID of the client.
-        piece_index (int): The index of the piece being downloaded.
-        block_offset (int): The offset within the piece.
-        block_length (int): The length of the block being downloaded.
 
-    Returns:
-        bool: True if the download was successful, False otherwise.
-    """
-    return manage_peer_connection(peer_ip, peer_port, info_hash, peer_id, piece_index, block_offset, block_length)
+async def exchange_messages(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter
+) -> bool:
     
-  
+    """Handle protocol message exchange: interested -> unchoke"""
+    
+    # send interested message
+    writer.write(b'\x00\x00\x00\x01\x02')  # interested
+    await writer.drain()
+
+    # wait for unchoke, handling intermediate messages
+    while True:
+        try:
+            # read message length prefix
+            length_bytes = await asyncio.wait_for(
+                reader.readexactly(4),
+                timeout=DEFAULT_TIMEOUT
+            )
+            length = struct.unpack(">I", length_bytes)[0]
+
+            # keep-alive message
+            if length == 0:
+                continue
+
+            # read message ID
+            msg_id = (await asyncio.wait_for(
+                reader.readexactly(1),
+                timeout=DEFAULT_TIMEOUT
+            ))[0]
+
+            # handle bitfield (ID:5)
+            if msg_id == 5:
+                await asyncio.wait_for(
+                    reader.readexactly(length - 1),
+                    timeout=DEFAULT_TIMEOUT
+                )
+                continue
+
+            # handle unchoke (ID:1)
+            if msg_id == 1:
+                return True
+
+            # handle other messages by discarding payload
+            if length > 1:
+                await asyncio.wait_for(
+                    reader.readexactly(length - 1),
+                    timeout=DEFAULT_TIMEOUT
+                )
+
+        except asyncio.TimeoutError:
+            logger.debug("Timeout waiting for unchoke")
+            return False
+
+
+async def download_piece_blocks(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    piece_index: int,
+    piece_length: int
+) -> Optional[bytes]:
+    
+    """Download piece in 16KB blocks"""
+    
+    piece_data = bytearray()
+
+    for block_offset in range(0, piece_length, BLOCK_SIZE):
+        block_size = min(BLOCK_SIZE, piece_length - block_offset)
+
+        # request block
+        if not await request_block(
+            writer,
+            piece_index,
+            block_offset,
+            block_size
+        ):
+            return None
+
+        # receive block
+        block_data = await receive_block(reader, block_size)
+        if not block_data:
+            return None
+
+        piece_data.extend(block_data)
+
+    return bytes(piece_data)
+
+
+async def request_block(
+    writer: asyncio.StreamWriter,
+    piece_index: int,
+    block_offset: int,
+    block_length: int
+) -> bool:
+    
+    """Send block request message"""
+    
+    try:
+        request = (
+            b'\x00\x00\x00\x0d\x06' +  # request (13 bytes)
+            struct.pack(">I", piece_index) +
+            struct.pack(">I", block_offset) +
+            struct.pack(">I", block_length)
+        )
+        writer.write(request)
+        await writer.drain()
+        return True
+    except Exception as e:
+        logger.debug(f"Request failed: {str(e)}")
+        return False
+
+
+async def receive_block(
+    reader: asyncio.StreamReader,
+    expected_length: int
+) -> Optional[bytes]:
+    
+    """Receive and validate block data"""
+    
+    try:
+        # read length prefix(4 bytes)
+        length_bytes = await asyncio.wait_for(
+            reader.readexactly(4),
+            timeout=DEFAULT_TIMEOUT
+        )
+        msg_length = struct.unpack(">I", length_bytes)[0]
+
+        # read rest of the message 
+        msg = await asyncio.wait_for(
+            reader.readexactly(msg_length),
+            timeout=DEFAULT_TIMEOUT
+        )
+
+        # validating message ID
+        if msg[0] != 7:
+            logger.debug(f"Invalid block message ID: {msg[0]}")
+            return None
+
+        # extracting piece index, offset and data
+        piece_idx = struct.unpack(">I", msg[1:5])[0]
+        offset = struct.unpack(">I", msg[5:9])[0]
+        data = msg[9:]
+
+        if len(data) != expected_length:
+            logger.debug(f"Unexpected block size: got {len(data)} expected {expected_length}")
+            return None
+
+        return data
+
+    except Exception as e:
+        logger.debug(f"Block receive failed: {str(e)}")
+        return None
+
+
+def verify_piece(piece_data: bytes, expected_hash: bytes) -> bool:
+    
+    """Validate piece SHA1 hash"""
+    
+    actual_hash = hashlib.sha1(piece_data).digest()
+    return actual_hash == expected_hash
