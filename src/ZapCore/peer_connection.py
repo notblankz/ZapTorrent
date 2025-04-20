@@ -2,14 +2,14 @@ import asyncio
 import hashlib
 import struct
 import logging
-from typing import Optional
+from typing import Optional, Tuple, List, Dict, Union
 
 logger = logging.getLogger(__name__)
 
 # Constants
 HANDSHAKE_LENGTH = 68
 BLOCK_SIZE = 16 * 1024  #standard block size
-DEFAULT_TIMEOUT = 10
+DEFAULT_TIMEOUT = 5
 
 
 async def download_piece(
@@ -19,7 +19,8 @@ async def download_piece(
     peer_id: bytes,
     piece_index: int,
     piece_length: int,
-    expected_hash: bytes
+    expected_hash: bytes,
+    total_length: int
 ) -> Optional[bytes]:
     
     """
@@ -32,7 +33,7 @@ async def download_piece(
         # 1. Establish connection
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(peer_ip, peer_port),
-            timeout=5
+            timeout=DEFAULT_TIMEOUT
         )
         logger.debug(f"Connected to {peer_ip}:{peer_port}")
 
@@ -41,17 +42,24 @@ async def download_piece(
             logger.debug("Handshake failed")
             return None
 
-        # 3. Message exchange (interested + wait for unchoke)
-        if not await exchange_messages(reader, writer):
-            logger.debug("Message exchange failed")
+        # 3. Message exchange with bitfield support
+        unchoked, bitfield = await exchange_messages(reader, writer)
+        if not unchoked:
+            logger.debug("Peer did not unchoke us")
+            return None
+            
+        # Check if peer has this piece
+        if piece_index >= len(bitfield) or not bitfield[piece_index]:
+            logger.debug(f"Peer doesn't have piece {piece_index}")
             return None
 
-        # 4. Download piece(in blocks as per protocol)
+        # 4. Download piece with out-of-order block support
         piece_data = await download_piece_blocks(
             reader,
             writer,
             piece_index,
-            piece_length
+            piece_length,
+            total_length  # Pass total_length for final piece
         )
         if not piece_data:
             return None
@@ -108,47 +116,50 @@ async def perform_handshake(
 async def exchange_messages(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter
-) -> bool:
+) -> Tuple[bool, List[bool]]:
     
     """Handle protocol message exchange: interested -> unchoke"""
     
-    # send interested message
-    writer.write(b'\x00\x00\x00\x01\x02')  # interested
+    bitfield = []
+    
+    # Send interested message
+    writer.write(b'\x00\x00\x00\x01\x02')
     await writer.drain()
 
-    # wait for unchoke, handling intermediate messages
     while True:
         try:
-            # read message length prefix
             length_bytes = await asyncio.wait_for(
                 reader.readexactly(4),
                 timeout=DEFAULT_TIMEOUT
             )
             length = struct.unpack(">I", length_bytes)[0]
 
-            # keep-alive message
-            if length == 0:
+            if length == 0:  # Keep-alive
                 continue
 
-            # read message ID
             msg_id = (await asyncio.wait_for(
                 reader.readexactly(1),
                 timeout=DEFAULT_TIMEOUT
             ))[0]
 
-            # handle bitfield (ID:5)
+            # Handle bitfield (ID:5)
             if msg_id == 5:
-                await asyncio.wait_for(
+                bitfield_bytes = await asyncio.wait_for(
                     reader.readexactly(length - 1),
                     timeout=DEFAULT_TIMEOUT
                 )
+                bitfield = [
+                    (byte >> (7 - i)) & 1
+                    for byte in bitfield_bytes
+                    for i in range(8)
+                ]
                 continue
 
-            # handle unchoke (ID:1)
+            # Handle unchoke (ID:1)
             if msg_id == 1:
-                return True
+                return True, bitfield
 
-            # handle other messages by discarding payload
+            # Handle other messages
             if length > 1:
                 await asyncio.wait_for(
                     reader.readexactly(length - 1),
@@ -156,41 +167,53 @@ async def exchange_messages(
                 )
 
         except asyncio.TimeoutError:
-            logger.debug("Timeout waiting for unchoke")
-            return False
+            return False, []
+        except asyncio.IncompleteReadError:
+            return False, []
 
 
 async def download_piece_blocks(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     piece_index: int,
-    piece_length: int
+    piece_length: int,
+    total_length: int
 ) -> Optional[bytes]:
     
     """Download piece in 16KB blocks"""
     
-    piece_data = bytearray()
+    received_blocks: Dict[int, bytes] = {}
+    
+    # calculate actual piece length (for final piece)
+    if piece_index == (total_length - 1) // piece_length:
+        actual_length = total_length - (piece_index * piece_length)
+    else:
+        actual_length = piece_length
 
-    for block_offset in range(0, piece_length, BLOCK_SIZE):
-        block_size = min(BLOCK_SIZE, piece_length - block_offset)
-
-        # request block
+    # request blocks
+    for block_offset in range(0, actual_length, BLOCK_SIZE):
+        block_size = min(BLOCK_SIZE, actual_length - block_offset)
+        
         if not await request_block(
-            writer,
-            piece_index,
-            block_offset,
+            writer, 
+            piece_index, 
+            block_offset, 
             block_size
         ):
             return None
 
-        # receive block
-        block_data = await receive_block(reader, block_size)
-        if not block_data:
-            return None
+    # receive blocks (out-of-order)
+    while sum(len(b) for b in received_blocks.values()) < actual_length:
+        block = await receive_block(reader)
+        
+        if not block or block["piece_index"] != piece_index:
+            continue
+        
+        received_blocks[block["offset"]] = block["data"]
 
-        piece_data.extend(block_data)
+    # reconstruct piece in order
+    return b''.join([received_blocks[o] for o in sorted(received_blocks)])
 
-    return bytes(piece_data)
 
 
 async def request_block(
@@ -218,42 +241,31 @@ async def request_block(
 
 
 async def receive_block(
-    reader: asyncio.StreamReader,
-    expected_length: int
-) -> Optional[bytes]:
+    reader: asyncio.StreamReader
+) -> Optional[Dict[str, Union[int, bytes]]]:
     
     """Receive and validate block data"""
     
     try:
-        # read length prefix(4 bytes)
         length_bytes = await asyncio.wait_for(
             reader.readexactly(4),
             timeout=DEFAULT_TIMEOUT
         )
         msg_length = struct.unpack(">I", length_bytes)[0]
 
-        # read rest of the message 
         msg = await asyncio.wait_for(
             reader.readexactly(msg_length),
             timeout=DEFAULT_TIMEOUT
         )
 
-        # validating message ID
-        if msg[0] != 7:
-            logger.debug(f"Invalid block message ID: {msg[0]}")
+        if msg[0] != 7:  #piece message
             return None
 
-        # extracting piece index, offset and data
-        piece_idx = struct.unpack(">I", msg[1:5])[0]
-        offset = struct.unpack(">I", msg[5:9])[0]
-        data = msg[9:]
-
-        if len(data) != expected_length:
-            logger.debug(f"Unexpected block size: got {len(data)} expected {expected_length}")
-            return None
-
-        return data
-
+        return {
+            "piece_index": struct.unpack(">I", msg[1:5])[0],
+            "offset": struct.unpack(">I", msg[5:9])[0],
+            "data": msg[9:]
+        }
     except Exception as e:
         logger.debug(f"Block receive failed: {str(e)}")
         return None

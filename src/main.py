@@ -45,6 +45,14 @@ async def main():
 
         peers = tracker_response.get("peers", [])
         total_pieces = torrent_metadata.get("piece count")
+        
+        # Calculate total length (single-file or multi-file)
+        if b'files' in torrent_metadata["info"]:
+            # Multi-file torrent
+            total_length = sum(f[b'length'] for f in torrent_metadata["info"][b'files'])
+        else:
+            # Single-file torrent
+            total_length = torrent_metadata["info"][b'length']
 
         for piece_index in range(0, total_pieces):
             print(f"[DOWNLOADER : INFO] Downloading piece {piece_index}/{total_pieces - 1}")
@@ -62,7 +70,8 @@ async def main():
                         peer_id=peer_id,
                         piece_index=piece_index,
                         piece_length=torrent_metadata["piece length"],
-                        expected_hash=Parser.get_piece_hash(torrent_metadata, piece_index)
+                        expected_hash=Parser.get_piece_hash(torrent_metadata, piece_index),
+                        total_length=total_length
                     )
 
                     if piece_data:

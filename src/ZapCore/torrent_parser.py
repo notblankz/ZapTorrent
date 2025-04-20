@@ -80,7 +80,7 @@ def construct_lookup_table(metadata: dict):
             return file_lookup_table
     except KeyError:
         print("[PARSER : INFO] No need to create lookup table - Single File Torrent")
-        return None
+        return []
 
 def log_lookup_table(lookup_table: list):
     print("[PARSER : LOG] Displaying the created lookup table")
