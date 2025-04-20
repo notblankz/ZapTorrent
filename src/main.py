@@ -45,127 +45,37 @@ async def main():
         tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 3)
         if args.verbose: Request.log_tracker_response(tracker_response)
 
-        peer_deque = deque(tracker_response.get("peers"))
-        peer_deque_lock = asyncio.Lock()
-        piece_queue = asyncio.Queue()
-        failed_piece_queue = asyncio.Queue()
+        for piece_index in range(0,5):
+            print(f"[DOWNLOADER : INFO] Download piece {piece_index}/{torrent_metadata.get("piece count") - 1}")
 
-        for piece in range(0, torrent_metadata.get("piece count")):
-            await piece_queue.put(piece)
-
-        async def download_worker(worker_id):
             try:
-                while not piece_queue.empty():
-                    piece_index = await piece_queue.get()
-                    tried_peers = 0
-                    success = False
-                    while tried_peers < 10:
-                        peer = None
-                        async with peer_deque_lock:
-                            if peer_deque:
-                                peer = peer_deque.popleft()
-                        if not peer:
-                            await asyncio.sleep(0.5)
-                            continue
-                        ip, port = peer.split(":")
-                        print(f"[DOWNLOADER : WORKER {worker_id}] Starting Download -> Peer: {peer} and Piece Index: {piece_index}")
-                        try:
-                            recv_piece_data = await PeerConnector.download_piece(
-                            ip, port,
+                for peer in tracker_response.get("peers"):
+                    ip, port = peer.split(":")
+                    if ip and port:
+                        # recv_piece_data = PeerConnector.start_peer_download(ip, int(port), torrent_metadata.get("info hash"), peer_id, piece_index, Parser.get_piece_hash(torrent_metadata, piece_index))
+                        recv_piece_data = await asyncio.to_thread(
+                            PeerConnector.start_peer_download,
+                            ip,
+                            int(port),
                             torrent_metadata.get("info hash"),
-                            peer_id, piece_index,
-                            torrent_metadata.get("piece length"),
-                            Parser.get_piece_hash(torrent_metadata, piece_index),
-                            torrent_metadata)
-                            if recv_piece_data:
-                                async with peer_deque_lock:
-                                    peer_deque.appendleft(peer)
-                                await Assembler.assemble(piece_index, recv_piece_data)
-                                success = True
-                                print(f"[DOWNLOADER : WORKER {worker_id}] Finished Download -> Peer: {peer} and Piece Index: {piece_index}")
-                                break
-                            else:
-                                async with peer_deque_lock:
-                                    peer_deque.append(peer)
-                                if tried_peers < 9:
-                                    print(f"[DOWNLOADER : WORKER {worker_id}] Retrying Download -> Peer: {peer} and Piece Index: {piece_index}")
-                        except Exception as e:
-                            async with peer_deque_lock:
-                                peer_deque.append(peer)
-                        finally:
-                            piece_queue.task_done()
-                        tried_peers += 1
-                    if not success:
-                        print(f"[DOWNLOADER : WORKER {worker_id}] Failed Download -> Peer: {peer} and Piece Index: {piece_index}")
-                        print(f"[DOWNLOADER : WORKER {worker_id}] Adding Piece {piece_index} to Failed Piece Queue")
+                            peer_id,
+                            piece_index,
+                            Parser.get_piece_hash(torrent_metadata, piece_index)
+                        )
+                        if recv_piece_data != None:
+                            # bump the peer to the top of the list for subsequent requests
+                            (tracker_response.get("peers")).remove(peer)
+                            (tracker_response.get("peers")).insert(0, peer)
+                            print(f"[DOWNLOADER : INFO] Successfully downloaded piece {piece_index}/{torrent_metadata.get("piece count") - 1}")
+                            await Assembler.assemble(piece_index, recv_piece_data)
+                            break
+            except Exception as e:
+                print("Error in main.py")
+                print(traceback.format_exc())
 
-                        await failed_piece_queue.put(piece_index)
-            finally:
-                print(f"[DOWNLOADER : WORKER {worker_id}] Shut Down")
-
-        async def failed_piece_worker(worker_id):
-            while True:
-                try:
-                    piece_index = await failed_piece_queue.get()
-                    success = False
-                    try:
-                        for peer in tracker_response.get("peers"):
-                            try:
-                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Retrying Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
-                                ip, port = peer.split(":")
-
-                                recv_piece_data = await PeerConnector.download_piece(
-                                    ip, port,
-                                    torrent_metadata.get("info hash"),
-                                    peer_id, piece_index,
-                                    torrent_metadata.get("piece length"),
-                                    Parser.get_piece_hash(torrent_metadata, piece_index),
-                                    torrent_metadata
-                                )
-                                if recv_piece_data:
-                                    async with peer_deque_lock:
-                                        peer_deque.appendleft(peer)
-                                    await Assembler.assemble(piece_index, recv_piece_data)
-                                    print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Recovered Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
-                                    success = True
-                                    break
-                            except Exception as e:
-                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Error in Recovering Piece -> Peer: {peer} and Piece Index: {piece_index}")
-                        if not success:
-                            print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Could no Recover Piece, Adding Piece {piece_index} back to Failed Piece Queue")
-                            await asyncio.sleep(5)
-                            await failed_piece_queue.put(piece_index)
-                    finally:
-                        failed_piece_queue.task_done()
-                except asyncio.CancelledError:
-                    print(f"[FAILED : WORKER {worker_id}] Shut Down")
-                    break
-                except Exception as e:
-                    print(f"[FAILED : WORKER {worker_id}] Critical error: {str(e)}")
-                    failed_piece_queue.task_done()
-
-        download_worker_array = [asyncio.create_task(download_worker(worker_id)) for worker_id in range(1, 21)]
-        failed_piece_worker_array = [asyncio.create_task(failed_piece_worker(worker_id)) for worker_id in range(101, 121)]
+        await Assembler.assembly_queue.join()
 
 
-        try:
-            await piece_queue.join()
-            await failed_piece_queue.join()
-            await Assembler.assembly_queue.join()
-        finally:
-            for worker in failed_piece_worker_array + download_worker_array:
-                worker.cancel()
-
-            await asyncio.gather(
-                *download_worker_array,
-                *failed_piece_worker_array,
-                return_exceptions=True
-            )
-
-        duration = time.time() - start_time
-        hours, rem = divmod(duration, 3600)
-        minutes, seconds = divmod(rem, 60)
-        print(f"\nCompleted download in {int(hours)}h {int(minutes)}m {seconds:.2f}s")
 
     elif args.parse:
         torrent_metadata = Parser.parse_torrent(args.parse)
