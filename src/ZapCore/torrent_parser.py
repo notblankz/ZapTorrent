@@ -71,16 +71,20 @@ def construct_lookup_table(metadata: dict):
             print("[PARSER : INFO] Creating lookup table for all files")
             global_offset = 0
             file_lookup_table = []
+            total_file_size = 0
             for file in ((metadata.get("info"))[b'files']):
+                total_file_size += file[b'length']
                 start_byte = global_offset
                 end_byte = global_offset + file[b'length']
                 file_lookup_table.append({"start": start_byte, "end": end_byte, "length": file[b'length'], "path": construct_path(file[b'path'])})
                 global_offset += file[b'length']
             print("[PARSER : INFO] Finished creating lookup table")
-            return file_lookup_table
+            metadata["total length"] = total_file_size
+            return metadata, file_lookup_table
     except KeyError:
         print("[PARSER : INFO] No need to create lookup table - Single File Torrent")
-        return None
+        metadata["total length"] = (metadata.get("info"))[b'length']
+        return metadata, None
 
 def log_lookup_table(lookup_table: list):
     print("[PARSER : LOG] Displaying the created lookup table")
