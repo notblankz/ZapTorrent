@@ -7,13 +7,9 @@ from pathlib import Path
 import asyncio
 from collections import deque
 import time
-
-# temp
-import traceback
+from tqdm import tqdm
+import math
 import sys
-
-logfile = open('output_log_2.txt', 'w', encoding="utf-8")
-sys.stdout = logfile
 
 async def main():
 
@@ -31,6 +27,10 @@ async def main():
     parser.add_argument("--output", "-o", metavar="<download destination>", type=str, default=str(Path(__file__).resolve().parents[1] / "Downloads"), help="Specify the directory where the downloaded files should be saved.")
 
     args = parser.parse_args()
+
+    logfile = open(f"{Path(args.download).name}.log", "w")
+    sys.stdout = logfile
+
     Assembler.set_output_dir(args.output)
 
     asyncio.create_task(Assembler.start_assembler())
@@ -44,6 +44,15 @@ async def main():
         peer_id = Request.generate_id()
         tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 3)
         if args.verbose: Request.log_tracker_response(tracker_response)
+
+        pbar = tqdm(
+            desc="Download Progress",
+            total=torrent_metadata.get("piece count"),
+            bar_format='[{elapsed}] [{n_fmt}/{total_fmt}] |{bar}| {percentage: 3.0f}%',
+            position=0,
+            leave=True,
+            colour='cyan',
+        )
 
         peer_deque = deque(tracker_response.get("peers"))
         peer_deque_lock = asyncio.Lock()
@@ -59,7 +68,8 @@ async def main():
                     piece_index = await piece_queue.get()
                     tried_peers = 0
                     success = False
-                    while tried_peers < 10:
+                    max_retries = min(math.ceil(len(tracker_response.get("peers"))/2), 10)
+                    while tried_peers < max_retries:
                         peer = None
                         async with peer_deque_lock:
                             if peer_deque:
@@ -83,23 +93,22 @@ async def main():
                                 await Assembler.assemble(piece_index, recv_piece_data)
                                 success = True
                                 print(f"[DOWNLOADER : WORKER {worker_id}] Finished Download -> Peer: {peer} and Piece Index: {piece_index}")
+                                pbar.update(1)
                                 break
                             else:
                                 async with peer_deque_lock:
                                     peer_deque.append(peer)
-                                if tried_peers < 9:
+                                if tried_peers < max_retries - 1:
                                     print(f"[DOWNLOADER : WORKER {worker_id}] Retrying Download -> Peer: {peer} and Piece Index: {piece_index}")
                         except Exception as e:
                             async with peer_deque_lock:
                                 peer_deque.append(peer)
-                        finally:
-                            piece_queue.task_done()
                         tried_peers += 1
                     if not success:
                         print(f"[DOWNLOADER : WORKER {worker_id}] Failed Download -> Peer: {peer} and Piece Index: {piece_index}")
                         print(f"[DOWNLOADER : WORKER {worker_id}] Adding Piece {piece_index} to Failed Piece Queue")
-
                         await failed_piece_queue.put(piece_index)
+                    piece_queue.task_done()
             finally:
                 print(f"[DOWNLOADER : WORKER {worker_id}] Shut Down")
 
@@ -111,7 +120,7 @@ async def main():
                     try:
                         for peer in tracker_response.get("peers"):
                             try:
-                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Retrying Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
+                                print(f"(Failed Piece Queue: {list(failed_piece_queue._queue)})[FAILED : WORKER {worker_id}] Retrying Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
                                 ip, port = peer.split(":")
 
                                 recv_piece_data = await PeerConnector.download_piece(
@@ -126,16 +135,17 @@ async def main():
                                     async with peer_deque_lock:
                                         peer_deque.appendleft(peer)
                                     await Assembler.assemble(piece_index, recv_piece_data)
-                                    print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Recovered Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
+                                    pbar.update(1)
+                                    print(f"(Failed Piece Queue: {list(failed_piece_queue._queue)})[FAILED : WORKER {worker_id}] Recovered Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
                                     success = True
                                     break
                             except Exception as e:
-                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Error in Recovering Piece -> Peer: {peer} and Piece Index: {piece_index}")
-                        if not success:
-                            print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Could no Recover Piece, Adding Piece {piece_index} back to Failed Piece Queue")
-                            await asyncio.sleep(5)
-                            await failed_piece_queue.put(piece_index)
+                                print(f"(Failed Piece Queue: {list(failed_piece_queue._queue)})[FAILED : WORKER {worker_id}] Error in Recovering Piece -> Peer: {peer} and Piece Index: {piece_index}")
                     finally:
+                        if not success:
+                            print(f"(Failed Piece Queue: {list(failed_piece_queue._queue)})[FAILED : WORKER {worker_id}] Could no Recover Piece, Adding Piece {piece_index} back to Failed Piece Queue")
+                            await asyncio.sleep(1)
+                            await failed_piece_queue.put(piece_index)
                         failed_piece_queue.task_done()
                 except asyncio.CancelledError:
                     print(f"[FAILED : WORKER {worker_id}] Shut Down")
@@ -161,6 +171,8 @@ async def main():
                 *failed_piece_worker_array,
                 return_exceptions=True
             )
+
+        pbar.close()
 
         duration = time.time() - start_time
         hours, rem = divmod(duration, 3600)
