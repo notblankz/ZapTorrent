@@ -10,6 +10,10 @@ import time
 
 # temp
 import traceback
+import sys
+
+logfile = open('output_log_2.txt', 'w', encoding="utf-8")
+sys.stdout = logfile
 
 async def main():
 
@@ -55,7 +59,7 @@ async def main():
                     piece_index = await piece_queue.get()
                     tried_peers = 0
                     success = False
-                    while tried_peers < 5:
+                    while tried_peers < 10:
                         peer = None
                         async with peer_deque_lock:
                             if peer_deque:
@@ -83,7 +87,7 @@ async def main():
                             else:
                                 async with peer_deque_lock:
                                     peer_deque.append(peer)
-                                if tried_peers < 4:
+                                if tried_peers < 9:
                                     print(f"[DOWNLOADER : WORKER {worker_id}] Retrying Download -> Peer: {peer} and Piece Index: {piece_index}")
                         except Exception as e:
                             async with peer_deque_lock:
@@ -107,7 +111,7 @@ async def main():
                     try:
                         for peer in tracker_response.get("peers"):
                             try:
-                                print(f"[FAILED : WORKER {worker_id}] Retrying Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
+                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Retrying Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
                                 ip, port = peer.split(":")
 
                                 recv_piece_data = await PeerConnector.download_piece(
@@ -122,13 +126,13 @@ async def main():
                                     async with peer_deque_lock:
                                         peer_deque.appendleft(peer)
                                     await Assembler.assemble(piece_index, recv_piece_data)
-                                    print(f"[FAILED : WORKER {worker_id}] Recovered Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
+                                    print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Recovered Failed Piece -> Peer: {peer} and Piece Index: {piece_index}")
                                     success = True
                                     break
                             except Exception as e:
-                                print(f"[FAILED : WORKER {worker_id}] Error in Recovering Piece -> Peer: {peer} and Piece Index: {piece_index}")
+                                print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Error in Recovering Piece -> Peer: {peer} and Piece Index: {piece_index}")
                         if not success:
-                            print(f"[FAILED : WORKER {worker_id}] Could no Recover Piece, Adding Piece {piece_index} back to Failed Piece Queue")
+                            print(f"[Failed Queue: {list(failed_piece_queue._queue)}][FAILED : WORKER {worker_id}] Could no Recover Piece, Adding Piece {piece_index} back to Failed Piece Queue")
                             await asyncio.sleep(5)
                             await failed_piece_queue.put(piece_index)
                     finally:
@@ -165,11 +169,12 @@ async def main():
 
     elif args.parse:
         torrent_metadata = Parser.parse_torrent(args.parse)
-        Parser.log_metadata(torrent_metadata)
-        file_lookup = Parser.construct_lookup_table(torrent_metadata)
+        # Parser.log_metadata(torrent_metadata)
+        torrent_metadata, file_lookup = Parser.construct_lookup_table(torrent_metadata)
+        if args.verbose and (b'files' in torrent_metadata.get("info")): Parser.log_lookup_table(file_lookup)
         peer_id = Request.generate_id()
         tracker_response = Request.get_peers(torrent_metadata, peer_id, 3, 3)
-        print(tracker_response.get("peers"))
+        # print(tracker_response.get("peers"))
 
 if __name__ == "__main__":
     asyncio.run(main())
