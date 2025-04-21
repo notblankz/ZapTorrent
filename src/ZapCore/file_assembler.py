@@ -88,14 +88,25 @@ def assemble_multiple(piece_index: int, piece_data, piece_length: int):
         overlap_end = min(file["end"], piece_end)
         overlap_len = overlap_end - overlap_start
 
+        remaining_file_bytes = file["length"] - (overlap_start - file["start"])
+        write_len = min(overlap_len, remaining_file_bytes)
+
+        if write_len <= 0:
+            continue
+
         os.makedirs(Path(output_dir / file["path"].parent), exist_ok=True)
+        file_path = Path(output_dir / file["path"])
+
+        if not file_path.exists():
+            with open(file_path, "wb") as f:
+                f.truncate(file["length"])
 
         try:
-            with open(Path(output_dir / file["path"]), "a+b") as f:
+            with open(Path(output_dir / file["path"]), "r+b") as f:
                 f.seek(overlap_start - file["start"])
-                f.write(piece_data[(overlap_start - piece_start): (overlap_start - piece_start) + overlap_len])
-                bytes_written += overlap_len
-                print(f"[ASSEMBLER : INFO] Wrote {overlap_len} bytes to {file['path']} at offset {overlap_start - file['start']}")
+                f.write(piece_data[(overlap_start - piece_start): (overlap_start - piece_start) + write_len])
+                bytes_written += write_len
+                print(f"[ASSEMBLER : INFO] Wrote {write_len} bytes to {file['path']} at offset {overlap_start - file['start']}")
         except Exception as e:
             print(f"[ASSEMBLER : ERROR] Failed to write to file: {file['path']} for Piece Index: {piece_index}")
             print(f"[ASSEMBLER : ERROR] {e}")
