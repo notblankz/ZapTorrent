@@ -157,7 +157,6 @@ async def main():
         download_worker_array = [asyncio.create_task(download_worker(worker_id)) for worker_id in range(1, 21)]
         failed_piece_worker_array = [asyncio.create_task(failed_piece_worker(worker_id)) for worker_id in range(101, 121)]
 
-
         try:
             await piece_queue.join()
             await failed_piece_queue.join()
