@@ -1,4 +1,4 @@
-# ⚡ ZapTorrent (Work in progress)
+# ⚡ ZapTorrent
 
 **ZapTorrent** is a high-performance, command-line BitTorrent client written in Python. It allows users to:
 
@@ -10,7 +10,7 @@ ZapTorrent is designed for efficiency and includes features to optimize peer sel
 
 
 ## Performance Optimization Used (in [main.py](/src/main.py))
-<img src = "/extras/optimization.webp">
+<img src = "./extras/optimization.webp">
 
 - Parallel download workers choose a peer and piece to download.
 - If a peer responds successfully, it’s moved to the front of the queue (preferred).
