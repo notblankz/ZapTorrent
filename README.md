@@ -18,11 +18,6 @@ ZapTorrent is designed for efficiency and includes features to optimize peer sel
 - Failed downloads are retried by a dedicated **Failed Piece Worker Pool** using an **end-game strategy** — request from all peers and cancel others when one succeeds.
 - If a piece still fails, it's added back for future retry.
 
-## Future Feature Implementations:
-- Connection pooling for better peer reuse
-- Periodic tracker refresh to discover new peers
-- Support for **UDP tracker requests**
-
 ## Prerequisites
 
 Ensure you have Python installed (preferably Python 3.8+).
