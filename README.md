@@ -3,7 +3,7 @@
 **ZapTorrent** is a high-performance, command-line BitTorrent client written in Python. It allows users to:
 
 - Parse `.torrent` metadata
-- Retrieve peer lists from trackers
+- Retrieve peer lists from trackers (HTTP tracker support only)
 - Download files piece-by-piece using the BitTorrent protocol
 
 ZapTorrent is designed for efficiency and includes features to optimize peer selection and download throughput.
