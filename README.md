@@ -8,7 +8,6 @@
 
 ZapTorrent is designed for efficiency and includes features to optimize peer selection and download throughput.
 
-
 ## Performance Optimization Used (in [main.py](/src/main.py))
 <img src = "./extras/optimization.webp">
 
